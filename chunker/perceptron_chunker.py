@@ -50,7 +50,7 @@ def perc_train(train_data, tagset, numepochs):
                 if cur_len != gold_len:
                     raise ValueError("output length is not the same with the input sentence")
                 feat_index = 0
-                # perceptron train
+                # perceptron update
                 for i in range(1, cur_len):
                     (feat_index, features) = perc.feats_for_word(feat_index, feat_list)
                     for f in features:
