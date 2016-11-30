@@ -8,15 +8,13 @@ def get_candidates(nbest, target, source):
     candidates = [line.strip().split("|||") for line in open(nbest).readlines()]
     nbests = [[] for _ in ref]
     original_feature_count = 0
-    sys.stderr.write("Calculating smoothed bleu for n-best...")
+    sys.stderr.write("Calculating smoothed bleu...")
     translation = namedtuple("translation", "features, smoothed_bleu")
-    for n, (i, sentence, features) in enumerate(candidates):
+    for (i, sentence, features) in candidates:
         (i, sentence, features) = (int(i), sentence.strip(), [float(f) for f in features.strip().split()])
         sentence_split = sentence.strip().split()
         stats = tuple(bleu.bleu_stats(sentence_split, ref[i]))
         nbests[i].append(translation(features, bleu.smoothed_bleu(stats)))
-        if n % 2000 == 0:
-            sys.stderr.write(".")
     return nbests
 
 # Save time by not caring if s1 > s2 since they're random.
@@ -47,6 +45,7 @@ def perceptron(nbests, epochs, tau, eta, xi, alpha):
         sys.stderr.write("\n")
         sys.stderr.write("Mistakes --> %s...\n" % str(int(mistakes)))
         theta = [t/(observed) for t in theta]
+    sys.stderr.write("\n")
     return theta
 
 if __name__ == '__main__':
