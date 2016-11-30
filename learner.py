@@ -1,6 +1,15 @@
 #!/usr/bin/env python
-import optparse, sys, os, bleu, random, math, string, copy, itertools, random
-from collections import namedtuple, defaultdict
+from collections import namedtuple
+import optparse, sys, os, bleu, copy, itertools, random, math, string
+
+
+def get_samples(nbest, tau, alpha):
+    random.seed()
+    for _ in xrange(tau):
+        s1 = random.choice(nbest)
+        s2 = random.choice(nbest)
+        if (s1 != s2) and (math.fabs(s1.smoothed_bleu - s2.smoothed_bleu) > alpha):
+            yield (s1, s2) if s1.smoothed_bleu > s2.smoothed_bleu else (s2, s1)
 
 def get_nbest(nbest, target, source):
     ref = [line.strip().split() for line in open(target).readlines()]
@@ -17,20 +26,12 @@ def get_nbest(nbest, target, source):
         nbests[i].append(translation(features, bleu.smoothed_bleu(stats)))
     return nbests
 
-def get_samples(nbest, tau, alpha):
-    random.seed()
-    for _ in xrange(tau):
-        s1 = random.choice(nbest)
-        s2 = random.choice(nbest)
-        if (s1 != s2) and (math.fabs(s1.smoothed_bleu - s2.smoothed_bleu) > alpha):
-            yield (s1, s2) if s1.smoothed_bleu > s2.smoothed_bleu else (s2, s1)
-
 def computePRO(nbests, epochs, tau, eta, xi, alpha):
     theta = [random.uniform(-1.0*sys.maxint, 1.0) for _ in xrange(len(nbests[0][0].features))]
     for epoch in xrange(epochs):
         mistakes = 0.0
         num = 0.0
-        sys.stderr.write("Starting iteration %s..." % (epoch+1))
+        sys.stderr.write("Iteration %s..." % (epoch+1))
         for nbest in nbests:
             for (s1, s2) in sorted(get_samples(nbest, tau, alpha), key=lambda (s1, s2): s2.smoothed_bleu - s1.smoothed_bleu)[:xi]:
                 if sum([x * y for x, y in zip(theta, s1.features)]) <= sum([x * y for x, y in zip(theta, s2.features)]):
@@ -49,14 +50,14 @@ def computePRO(nbests, epochs, tau, eta, xi, alpha):
 
 if __name__ == '__main__':
     optparser = optparse.OptionParser()
-    optparser.add_option("-n", "--nbest", dest="nbest", default=os.path.join("data", "train.nbest"), help="N-best file")
-    optparser.add_option("-e", "--target", dest="target", default=os.path.join("data", "train.en"), help="Target file")
-    optparser.add_option("-f", "--source", dest="source", default=os.path.join("data", "train.fr"), help="Source file")
     optparser.add_option("-t", "--tau", dest="tau", default=5000, type="int", help="Samples generated from n-best list per input sentence (default=5000)")
     optparser.add_option("-a", "--alpha", dest="alpha", default=0.21, type="float", help="Sampler acceptance cutoff (default=0.21)")
     optparser.add_option("-x", "--xi", dest="xi", default=100, type="int", help="Training data generated from the samples tau (default=100)")
     optparser.add_option("-r", "--eta", dest="eta", default=0.1, type="float", help="Perceptron learning rate (default=0.1)")
     optparser.add_option("-i", "--epochs", dest="epochs", default=5, type="int", help="Number of epochs for perceptron training (default=5)")
+    optparser.add_option("-n", "--nbest", dest="nbest", default=os.path.join("data", "train.nbest"), help="N-best file")
+    optparser.add_option("-e", "--target", dest="target", default=os.path.join("data", "train.en"), help="Target file")
+    optparser.add_option("-f", "--source", dest="source", default=os.path.join("data", "train.fr"), help="Source file")
     (opts, _) = optparser.parse_args()
     nbests = get_nbest(opts.nbest, opts.target, opts.source)
     weights = computePRO(nbests, opts.epochs, opts.tau, opts.eta, opts.xi, opts.alpha)
