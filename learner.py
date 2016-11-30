@@ -3,7 +3,7 @@ import optparse, sys, os, bleu, random, math, string
 from collections import namedtuple
 
 #faster sampleing
-def samples(nbest, tau, alpha):
+def samples(nbest, alpha, tau):
     random.seed()
     for _ in xrange(tau):
         s1 = random.choice(nbest)
@@ -12,15 +12,15 @@ def samples(nbest, tau, alpha):
             yield (s1, s2) if s1.smoothed_bleu > s2.smoothed_bleu else (s2, s1)
 
 #compute bleu score
-def get_nbest(nbest, target, source):
-    ref = [line.strip().split() for line in open(target).readlines()]
+def get_nbest(nbest, source, target):
     src = [line.strip().split() for line in open(source).readlines()]
-    candidates = [line.strip().split("|||") for line in open(nbest).readlines()]
+    ref = [line.strip().split() for line in open(target).readlines()]
+    translations = [line.strip().split("|||") for line in open(nbest).readlines()]
     nbests = [[] for _ in ref]
     original_feature_count = 0
     sys.stderr.write("Computing smoothed bleu...")
     translation = namedtuple("translation", "features, smoothed_bleu")
-    for (i, sentence, features) in candidates:
+    for (i, sentence, features) in translations:
         (i, sentence, features) = (int(i), sentence.strip(), [float(f) for f in features.strip().split()])
         sentence_split = sentence.strip().split()
         stats = tuple(bleu.bleu_stats(sentence_split, ref[i]))
@@ -28,14 +28,14 @@ def get_nbest(nbest, target, source):
     return nbests
 
 #perceptron
-def computePRO(nbests, epochs, tau, eta, xi, alpha):
+def computePRO(nbests, tau, eta, xi, alpha, epochs):
     theta = [random.uniform(-1.0*sys.maxint, 1.0) for _ in xrange(len(nbests[0][0].features))]
     for epoch in xrange(epochs):
         mistakes = 0.0
         num = 0.0
         sys.stderr.write("Iteration %s..." % (epoch+1))
         for nbest in nbests:
-            for (s1, s2) in sorted(samples(nbest, tau, alpha), key=lambda (s1, s2): s2.smoothed_bleu - s1.smoothed_bleu)[:xi]:
+            for (s1, s2) in sorted(samples(nbest, alpha, tau), key=lambda (s1, s2): s2.smoothed_bleu - s1.smoothed_bleu)[:xi]:
                 if sum([x * y for x, y in zip(theta, s1.features)]) <= sum([x * y for x, y in zip(theta, s2.features)]):
                     mistakes += 1
                     # theta += eta * (s1.features - s2.features)
@@ -61,6 +61,6 @@ if __name__ == '__main__':
     optparser.add_option("-e", "--target", dest="target", default=os.path.join("data", "train.en"), help="Target file")
     optparser.add_option("-f", "--source", dest="source", default=os.path.join("data", "train.fr"), help="Source file")
     (opts, _) = optparser.parse_args()
-    nbests = get_nbest(opts.nbest, opts.target, opts.source)
-    weights = computePRO(nbests, opts.epochs, opts.tau, opts.eta, opts.xi, opts.alpha)
+    nbests = get_nbest(opts.nbest, opts.source, opts.target)
+    weights = computePRO(nbests, opts.tau, opts.eta, opts.xi, opts.alpha, opts.epochs)
     print "\n".join([str(weight) for weight in weights])
