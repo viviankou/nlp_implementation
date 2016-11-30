@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-import optparse, sys, os, bleu, copy, itertools, random, math, string
+import optparse, sys, os, bleu, random, math, string
 from collections import namedtuple
 
 #faster sampleing
