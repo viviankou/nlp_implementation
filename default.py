@@ -1,157 +1,65 @@
 #!/usr/bin/env python
-import optparse
-import sys
-import os
-import bleu
-import random
-import math
-import time
-import itertools
-from collections import namedtuple
+import optparse, sys, os, bleu, random, math, string, copy, itertools, random
+from collections import namedtuple, defaultdict
 
-# samples generated from n-best list per input sentence
-tau = 5000
-# sampler acceptance cutoff
-alpha = 0.1
-# training data generated from the samples tau
-xi = 100
-# perceptron learning rate
-eta = 0.1
-# number of epochs for perceptron training
-epochs = 5
-# lines = [index for index,line in enumerate(open(opts.reference))]
-# nbests = [[] for x in xrange(lines[-1]+1)]
-# Number of sentences are 1989
-nbests = [[] for x in xrange(1989)]
-# It saves the already seen tuples
-Cache = [[] for x in xrange(1989)]
-
-
-def computeBleu(system, reference):
-    stats = [0 for i in xrange(10)]
-    stats = [sum(scores) for scores in
-             zip(stats, bleu.bleu_stats(system, reference))]
-    return bleu.smoothed_bleu(stats)
-
-
-def Check_Tuple(e1, e2, c):
-    if tuple([e1, e2]) in c:
-        # sys.stderr.write("1")
-        return False
-    elif tuple([e2, e1]) in c:
-        # sys.stderr.write("1")
-        return False
-    else:
-        return True
-
-
-def get_sample(nbest, cache):
-  # sample contains a list of tuples for a source sentence, where each tuple = (s1,s2)
-    sample = []
-    if len(nbest) >= 2:
-        for i in range(tau):
-            # select returns a list of 2 randomly selected items from nbest
-            select = random.sample(nbest, 2)
-            s1 = select[0]
-            s2 = select[1]
-            while Check_Tuple(s1, s2, cache) is False:
-                select = random.sample(nbest, 2)
-                s1 = select[0]
-                s2 = select[1]
-
-            if math.fabs(s1.smoothed_bleu - s2.smoothed_bleu) > alpha:
-                if s1.smoothed_bleu > s2.smoothed_bleu:
-                    # sample += (s1, s2)
-                    sample.append((s1, s2))
-                else:
-                    # sample += (s2, s1)
-                    sample.append((s2, s1))
-            else:
-                continue
-    else:
-        s1 = nbest[0]
-        s2 = nbest[0]
-        sample.append((s1, s2))
-    return sample
-
-def count_possible_untranslated(src, sentence):
-    filtered = itertools.ifilter(lambda h: not any(c.isdigit() for c in h) , sentence) # strip numerals and words containing them
-    possible_untranslated = -1.0 * (len(set(src).intersection(filtered)) + 1) # add 1 as -1 is our best score
-    return possible_untranslated
-
-def computeNBests():
-    src = [line.strip().split() for line in open(opts.source).readlines()]
-    ref = {int(index): line for index, line in enumerate(open(opts.reference))}
-    for line in open(opts.nbest):
-        # ith french sentence, english translated sentence, feature weights
-        (i, sentence, features) = line.strip().split("|||")
-        system = sentence.strip().split()
-        reference = ref[int(i.strip())].strip().split()
-        score = computeBleu(system, reference)
-        features = [float(h) for h in features.strip().split()]
+def get_candidates(nbest, target, source):
+    ref = [line.strip().split() for line in open(target).readlines()]
+    src = [line.strip().split() for line in open(source).readlines()]
+    candidates = [line.strip().split("|||") for line in open(nbest).readlines()]
+    nbests = [[] for _ in ref]
+    original_feature_count = 0
+    sys.stderr.write("Calculating smoothed bleu for n-best...")
+    translation = namedtuple("translation", "features, smoothed_bleu")
+    for n, (i, sentence, features) in enumerate(candidates):
+        (i, sentence, features) = (int(i), sentence.strip(), [float(f) for f in features.strip().split()])
         sentence_split = sentence.strip().split()
-        #stats = tuple(bleu.bleu_stats(sentence_split, ref[i]))
-        features.append(count_possible_untranslated(src[int(i)], sentence_split))
-        #score = sum(features)
-        translation = namedtuple("translation",
-                                 "sentence, smoothed_bleu, features")
-        nbests[int(i)].append(translation(sentence, score, features))
+        stats = tuple(bleu.bleu_stats(sentence_split, ref[i]))
+        nbests[i].append(translation(features, bleu.smoothed_bleu(stats)))
+        if n % 2000 == 0:
+            sys.stderr.write(".")
+    return nbests
 
-        # theta = [float(1.0) for _ in xrange(len(features))]
-        theta = [random.uniform(-1.0*sys.maxint, 1.0)
-                 for _ in xrange(len(features))]
-    return [nbests, theta]
+# Save time by not caring if s1 > s2 since they're random.
+def get_samples(nbest, tau, alpha):
+    random.seed()
+    for _ in xrange(tau):
+        s1 = random.choice(nbest)
+        s2 = random.choice(nbest)
+        if (s1 != s2) and (math.fabs(s1.smoothed_bleu - s2.smoothed_bleu) > alpha):
+            yield (s1, s2) if s1.smoothed_bleu > s2.smoothed_bleu else (s2, s1)
 
-
-def computePRO(nbests, theta):
-    for i in range(epochs):
-        mistakes = 0
-        # nbest contains a list of (english translation, bleu score, features) tuples for a source sentence
-        for i, nbest in enumerate(nbests):
-            sample = get_sample(nbest, Cache[i])
-            Cache[i] = Cache[i] + sample
-            # sort the tau samples from get_sample() using s1.smoothed_bleu - s2.smoothed_bleu
-            sample.sort(key=lambda tup: math.fabs(tup[0].smoothed_bleu - tup[1].smoothed_bleu))
-            sample.reverse()
-            # keep the top xi (s1, s2) values from the sorted list of samples
-            sample = sample[:xi]
-            # do a perceptron update of the parameters theta:
-            for tup in sample:
-                s1, s2 = tup
-                # if theta * s1.features <= theta * s2.features:
+def perceptron(nbests, epochs, tau, eta, xi, alpha):
+    theta = [random.uniform(-1.0*sys.maxint, 1.0) for _ in xrange(len(nbests[0][0].features))]
+    for e in xrange(epochs):
+        mistakes = 0.0
+        observed = 0.0
+        sys.stderr.write("Starting iteration %s..." % (e+1))
+        for nbest in nbests:
+            for (s1, s2) in sorted(get_samples(nbest, tau, alpha), key=lambda (s1, s2): s2.smoothed_bleu - s1.smoothed_bleu)[:xi]:
                 if sum([x * y for x, y in zip(theta, s1.features)]) <= sum([x * y for x, y in zip(theta, s2.features)]):
                     mistakes += 1
-                    # theta += eta * (s1.features - s2.features)  # this is vector addition!
+                    # theta += eta * (s1.features - s2.features)
                     # update = eta * (s1.features - s2.features)
                     update = [item * eta for item in [x - y for x, y in zip(s1.features, s2.features)]]
                     # theta = theta + update
-                    theta = [x + y for x, y in zip(theta, update)]
-                    # sys.stderr.write(" ".join([str(weight) for weight in theta]))
-                    # sys.stderr.write("\n")
+                    theta = [x + y for x, y in zip(theta, update)]# theta += eta * (s1.features - s2.features)
+                observed += 1
+        sys.stderr.write("\n")
         sys.stderr.write("Mistakes --> %s...\n" % str(int(mistakes)))
+        theta = [t/(observed) for t in theta]
     return theta
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     optparser = optparse.OptionParser()
+    optparser.add_option("-n", "--nbest", dest="nbest", default=os.path.join("data", "train.nbest"), help="N-best file")
+    optparser.add_option("-e", "--target", dest="target", default=os.path.join("data", "train.en"), help="Target file")
     optparser.add_option("-f", "--source", dest="source", default=os.path.join("data", "train.fr"), help="Source file")
-    optparser.add_option("-n", "--nbest",
-                         dest="nbest",
-                         default=os.path.join("data", "train.nbest"),
-                         help="N-best file")
-    optparser.add_option("-r", "--reference",
-                         dest="reference",
-                         default=os.path.join("data", "train.en"),
-                         help="English reference sentences")
+    optparser.add_option("-t", "--tau", dest="tau", default=5000, type="int", help="Samples generated from n-best list per input sentence (default=5000)")
+    optparser.add_option("-a", "--alpha", dest="alpha", default=0.21, type="float", help="Sampler acceptance cutoff (default=0.21)")
+    optparser.add_option("-x", "--xi", dest="xi", default=100, type="int", help="Training data generated from the samples tau (default=100)")
+    optparser.add_option("-r", "--eta", dest="eta", default=0.1, type="float", help="Perceptron learning rate (default=0.1)")
+    optparser.add_option("-i", "--epochs", dest="epochs", default=5, type="int", help="Number of epochs for perceptron training (default=5)")
     (opts, _) = optparser.parse_args()
-
-    start = time.time()
-    output = computeNBests()
-    end = time.time()
-    sys.stderr.write("Compute NBest is Finished in %s seconds!\n" % str(end-start))
-
-    start = time.time()
-    weights = computePRO(output[0], output[1])
-    end = time.time()
-    sys.stderr.write("Compute PRO is Finished in %s seconds!\n" % str(end-start))
+    nbests = get_candidates(opts.nbest, opts.target, opts.source)
+    weights = perceptron(nbests, opts.epochs, opts.tau, opts.eta, opts.xi, opts.alpha)
     print "\n".join([str(weight) for weight in weights])
