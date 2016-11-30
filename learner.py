@@ -1,9 +1,9 @@
 #!/usr/bin/env python
-from collections import namedtuple
 import optparse, sys, os, bleu, copy, itertools, random, math, string
+from collections import namedtuple
 
-
-def get_samples(nbest, tau, alpha):
+#faster sampleing
+def samples(nbest, tau, alpha):
     random.seed()
     for _ in xrange(tau):
         s1 = random.choice(nbest)
@@ -11,13 +11,14 @@ def get_samples(nbest, tau, alpha):
         if (s1 != s2) and (math.fabs(s1.smoothed_bleu - s2.smoothed_bleu) > alpha):
             yield (s1, s2) if s1.smoothed_bleu > s2.smoothed_bleu else (s2, s1)
 
+#compute bleu score
 def get_nbest(nbest, target, source):
     ref = [line.strip().split() for line in open(target).readlines()]
     src = [line.strip().split() for line in open(source).readlines()]
     candidates = [line.strip().split("|||") for line in open(nbest).readlines()]
     nbests = [[] for _ in ref]
     original_feature_count = 0
-    sys.stderr.write("Calculating smoothed bleu...")
+    sys.stderr.write("Computing smoothed bleu...")
     translation = namedtuple("translation", "features, smoothed_bleu")
     for (i, sentence, features) in candidates:
         (i, sentence, features) = (int(i), sentence.strip(), [float(f) for f in features.strip().split()])
@@ -26,6 +27,7 @@ def get_nbest(nbest, target, source):
         nbests[i].append(translation(features, bleu.smoothed_bleu(stats)))
     return nbests
 
+#perceptron
 def computePRO(nbests, epochs, tau, eta, xi, alpha):
     theta = [random.uniform(-1.0*sys.maxint, 1.0) for _ in xrange(len(nbests[0][0].features))]
     for epoch in xrange(epochs):
@@ -33,7 +35,7 @@ def computePRO(nbests, epochs, tau, eta, xi, alpha):
         num = 0.0
         sys.stderr.write("Iteration %s..." % (epoch+1))
         for nbest in nbests:
-            for (s1, s2) in sorted(get_samples(nbest, tau, alpha), key=lambda (s1, s2): s2.smoothed_bleu - s1.smoothed_bleu)[:xi]:
+            for (s1, s2) in sorted(samples(nbest, tau, alpha), key=lambda (s1, s2): s2.smoothed_bleu - s1.smoothed_bleu)[:xi]:
                 if sum([x * y for x, y in zip(theta, s1.features)]) <= sum([x * y for x, y in zip(theta, s2.features)]):
                     mistakes += 1
                     # theta += eta * (s1.features - s2.features)
